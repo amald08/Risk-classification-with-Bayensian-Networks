@@ -1,0 +1,210 @@
+---
+title: "Bayesian Networks for Tax Audit Risk Classification"
+subtitle: "Case of Study for a Business Consortium"
+
+author: "Adrián Maldonado Hernández"
+date: "18/12/2020"
+
+output: 
+  pdf_document
+  
+fontsize: 12pt
+
+abstract: "This document is intended to work as a guide of what was made for the original report. Since sensible information was used to make the explained model, in this case the masked information is used with some explanation of what was done to the data. Some special packages must be installed, this is indicated in the setup code chunk, the bnclassify package might use special dependencies for the plots."
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(fig.pos = '!h')
+
+# Change to set the correct path
+setwd("C:/Torino/Third Semester/SML/Final Project")  
+# install.packages('tidyverse')
+# install.packages('bnclassify')
+# install.packages('xtable')
+# install.packages('kableExtra')
+
+library(tidyverse)
+library(bnclassify)
+library(xtable)
+library(kableExtra)
+X = read.csv('Final Data.csv')
+```
+
+# Data
+
+Here we include the data already cleaned and manipulated, since the purpose of this work was to implement Bayesian networks and the complete treatment of the data, even with a synthetic dataset that mimics the real one, would be too long.
+
+- Active: if the company has been active during the fiscal year
+         (May 2020 ->) - Binary
+
+- ID_Loc: location id, it seemed like the location was relevant,
+         which could be due to formed clusters. Categorical, just
+         care about the labels.
+
+- ID_BL: id of the business line of a company. Categorical
+ M_Doc: searching for an specific document failed in this cases. -
+        Binary.
+
+- A, B: internal control variables, binary, for understanding them
+       it's needed to know more about the business.
+
+- Total_1: Size of the operation($) during the last 4 years. At first
+          continuous, then made categorical using the quantiles of
+          an appropriate Pareto distribution. It was found that the
+          ordering was not important. 0 represents that no
+          information was found, which is critical.
+
+- Total_2: Expected operation for the current year and the last one.
+          Same treatment as the one before. Different parameters for
+          the distributions.
+
+- N_i: if a notification of tax inquiries has been received in the
+      last two years. Severity increases with the number. Binary.
+- S_type: type of schema used to pay the workers. Categorical
+
+- Risk: risk level: 1 low, 2 medium, 3 high. Again, it was found out
+       that the ordering ins not important since we can set thresholds
+       for making the classification later on.
+       
+As mentioned in the report, all variables must be turned into categorical ones, the ordering is not important. For making this, it is simple to use the `R` built in function `factor` and apply it to every column.
+
+```{r improve dataset}
+
+id_comp = X$X
+
+X = X[,2:dim(X)[2]]
+
+names(X) = c('Active', 'ID_Loc', 'ID_BL', 'M_Doc', 
+            'A', 'B','Total_1','Total_2', 'N_1', 'N_2',
+            'N_3','N_4','S_Type','Risk')
+X = X %>% 
+  mutate(N = N_1 + N_2 + N_3 + N_4) %>% 
+  select(-N_1,-N_2,-N_3,-N_4,-Risk,Risk)
+
+for(i in 1:dim(X)[2]){
+  X[,i]<- factor(X[,i], exclude = NA)
+}
+```
+
+```{r aux functions}
+cv_average<-function(X,k,n){
+  x = data.frame(0,0,0,0)
+  for(i in 1:n){
+    x[i,] = cv(list("NB" = nb, 
+                    "TAN LIK" = tan_lik,
+                    "TAN AIC" = tan_aic,
+                    "TAN BIC" = tan_bic), X, k)
+    # x[i,] = c(cv(nb, X, k),
+    #           cv(tan_lik, X, k),
+    #           cv(tan_aic, X, k),
+    #           cv(tan_bic, X, k))
+  }
+  colnames(x) = c("NB","TAN LIK", "TAN AIC", "TAN BIC")
+  y = colMeans(x)
+  return(y)
+}
+
+```
+
+For validation, an 80-20 split was made with the 109 companies used for training the model, then accuracy tested with a 10 fold cross validation that was ran 20 times and then taking averages. The decision was made due to the small amount of available data.
+
+```{r model_data}
+set.seed(700)
+i_train = sample(1:dim(X)[1], 88, replace = F)
+
+id_train = sort(i_train)
+id_test = setdiff(id_comp, id_train)
+  
+X_train = X[i_train,]
+X_test = X[-i_train,]
+```
+
+# Model
+
+For fitting the model, the `bnc` function from the *bnclassify* package was used, the arguments are: name of the model to be fitted, response variable, data set to be used and a smoothing coefficient which was set to be equal along all the models. 
+
+```{r model}
+nb <- bnc('nb','Risk',
+          X_train, smooth = .01)
+tan_lik <- bnc('tan_cl', 'Risk', 
+               X_train, smooth = .01, 
+               dag_args = list(score = 'loglik'))
+tan_aic <- bnc('tan_cl', 'Risk', 
+               X_train, smooth = .01, 
+               dag_args = list(score = 'aic'))
+tan_bic <- bnc('tan_cl', 'Risk',
+               X_train, smooth = .01,
+               dag_args = list(score = 'bic'))
+```
+
+For checking the conditional distributions of the fitted model, one can check `model$.params`, next we show the conditional distributions for *Risk* given the variable *N*, which has four levels.
+```{r params}
+kable(nb$.params$N, align = "lc", booktabs = T, format = 'latex')%>%
+  kable_styling(position = "center")
+```
+
+The obtained networks are also shown in Figure 1 at the end of this document.
+
+Next we show the accuracy, calculated as stated before.
+
+```{r acc}
+
+# This chunk might take a while to run, so the last parameter of the cv_average function can be changed.
+
+kable(cv_average(X_train,10,20), booktabs = T, format ='latex', 
+      align = "lc") %>%
+  kable_styling(position = 'center')
+```
+
+Finally, it is checked how they behave with respect to the testing set. The shown classification is given by the `predict` function, but here there are two options:
+
+- Get the classification by using the most probable case.
+
+- By setting the parameter `prob = TRUE`, the output is a data frame with the probabilities of belonging to each class, then we could set thresholds that we consider appropriate to make the classification. For example, if the probability of being at high risk is more than $.1$
+set it to this class, even though it won't be the most probable case.
+
+```{r test}
+p_nb = predict(nb, X_test)
+p_lik = predict(tan_lik, X_test)
+p_aic = predict(tan_aic, X_test)
+p_bic = predict(tan_bic, X_test)
+
+res = cbind(X_test$Risk, p_nb, p_lik, p_aic, p_bic)
+colnames(res) = c('Test', 'Naïve Bayes', 'TAN Lik',
+                  'TAN AIC', 'TAN BIC')
+res = as.data.frame(res)
+
+res$ID = id_test
+
+kable(res, booktabs = T, format = 'latex') %>%
+  kable_styling(position = 'center')
+```
+
+The data frame with the probabilities and the full classification are not shown since there is too much space required and can be of little information. However the codes for obtaining them is included below.
+
+```{r full data}
+# p_nb_p = predict(nb, X_test, prob = T)
+# p_lik_p = predict(tan_lik, X_test, prob = T)
+# p_aic_p = predict(tan_aic, X_test, prob = T)
+# p_bic_p = predict(tan_bic, X_test, prob = T)
+
+# p_nb = predict(nb, X)
+# p_lik = predict(tan_lik, X)
+# p_aic = predict(tan_aic, X)
+# p_bic = predict(tan_bic, X)
+# 
+# res = cbind(X$Risk, p_nb, p_lik, p_aic, p_bic)
+# res$ID = id_comp
+```
+
+The final classification for the companies that were not used to fit the model is not shown since that is not of interest.
+
+```{r plots, fig.size = 8, fig.cap = 'The shown networks are the following: top left: Naïve Bayes, top right: TAN with likelihood, bottom left: TAN AIC and lastly TAN BIC'}
+par(mfrow = c(2,2))
+plot(nb)
+plot(tan_lik)
+plot(tan_aic)
+plot(tan_bic)
+par(mfrow = c(1,1))
+```
